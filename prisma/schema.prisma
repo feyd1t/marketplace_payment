@@ -1,0 +1,37 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Provider {
+  id            String   @id @default(uuid())
+  name          String
+  email         String   @unique
+  cpfCnpj       String
+  iuguAccountId String?
+  liveApiToken  String?
+  userToken     String?
+  createdAt     DateTime @default(now())
+
+  // Relação: Um prestador pode ter várias transações
+  transactions  Transaction[]
+}
+
+// NOVA TABELA: O registro financeiro
+model Transaction {
+  id             String   @id @default(uuid())
+  amount         Int      // Valor total em centavos (R$ 10,00 = 1000)
+  marketplaceFee Int      // Nossa comissão em centavos
+  providerAmount Int      // Parte do prestador em centavos
+  status         String   // PENDING, PAID, CANCELED
+  externalId     String?  // ID da fatura na Iugu (ex: INV_123)
+  
+  providerId     String
+  provider       Provider @relation(fields: [providerId], references: [id])
+  
+  createdAt      DateTime @default(now())
+}
