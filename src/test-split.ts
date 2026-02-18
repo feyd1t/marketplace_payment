@@ -1,5 +1,5 @@
 import { prisma } from './lib/prisma.js';
-import { CommissionService } from './services/commission.service'; // SEM extensão
+import { CommissionService } from './services/ComissionService.js'; // SEM extensão
 const commissionService = new CommissionService();
 
 async function testDay2() {

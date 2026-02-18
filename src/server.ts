@@ -1,129 +1,99 @@
 import fastify from 'fastify';
+import { z } from 'zod'; // <--- Agora importado corretamente!
 import { prisma } from './lib/prisma';
-import { CommissionService } from './services/commission.service';
+import { CommissionService } from './services/ComissionService'; 
+import { IuguService } from './services/IuguService';
 
 const app = fastify();
-const commissionService = new CommissionService();
 
-// =============================================================
-// ROTA 1: Listar todos os prestadores
-// =============================================================
+// ROTA 1: Listar Prestadores
 app.get('/providers', async () => {
   const providers = await prisma.provider.findMany();
   return providers;
 });
 
-// =============================================================
-// ROTA 2: Criar uma nova transação (O coração do sistema)
-// =============================================================
+// ROTA 2: Criar Transação
 app.post('/transactions', async (request, reply) => {
-  const { providerId, amount, category, city } = request.body as {
-    providerId: string;
-    amount: number;
-    category: string;
-    city: string;
-  };
-
-  const provider = await prisma.provider.findUnique({
-    where: { id: providerId }
+  const schema = z.object({
+    amount: z.number(),
+    providerId: z.string().uuid(),
+    description: z.string(),
+    category: z.string(),
+    state: z.string()
   });
 
-  if (!provider) {
-    return reply.status(404).send({ error: "Prestador não encontrado" });
-  }
+  const { amount, providerId, description, category, state } = schema.parse(request.body);
 
-  const split = commissionService.calculateSplit(amount, category, city);
+  const commissionService = new CommissionService();
+  const iuguService = new IuguService();
 
+  // 1. Calcula o Split
+  // O código abaixo resolve o erro "Property does not exist"
+  const split = commissionService.calculateSplit(amount, category, state);
+  
+  // TRADUÇÃO: O serviço devolve com underline, mas o banco (Prisma) quer sem underline
+  // Se o seu serviço retornar 'platformAmount', ele usa. Se retornar 'marketplace_amount', ele usa também.
+  const finalPlatformAmount = (split as any).platformAmount || (split as any).marketplace_amount;
+  const finalProviderAmount = (split as any).providerAmount || (split as any).provider_amount;
+
+  // 2. Integração Gateway
+  const invoice = await iuguService.createCharge(amount, description);
+
+  // 3. Salva no Banco
   const transaction = await prisma.transaction.create({
     data: {
-      amount: split.total,
-      marketplaceFee: split.marketplace_amount,
-      providerAmount: split.provider_amount,
-      status: 'PENDING',
-      providerId: provider.id,
-      externalId: `API_INV_${Date.now()}`
-    }
-  });
-
-  // Devolvemos a resposta (AQUI FECHA A ROTA 2)
-  return reply.status(201).send({
-    message: "Transação criada com sucesso!",
-    transactionId: transaction.id,
-    externalId: transaction.externalId,
-    split_details: split
-  });
-});
-
-// =============================================================
-// ROTA 3: Webhook (Onde a Iugu avisa que o dinheiro caiu)
-// =============================================================
-app.post('/webhooks/iugu', async (request, reply) => {
-  console.log("🔔 Webhook recebido!");
-
-  const { event, data } = request.body as {
-    event: string;
-    data: { id: string; status: string };
-  };
-
-  if (event === 'invoice.status_changed' && data.status === 'paid') {
-    const invoiceId = data.id;
-    console.log(`💰 Pagamento confirmado para a fatura: ${invoiceId}`);
-
-    try {
-        await prisma.transaction.updateMany({
-            where: { externalId: invoiceId },
-            data: { status: 'PAID' }
-        });
-        console.log("✅ Banco de dados atualizado para PAID.");
-    } catch (error) {
-        console.error("Erro ao atualizar transação:", error);
-        return reply.status(500).send();
-    }
-  }
-
-  return reply.status(200).send();
-});
-// =============================================================
-// ROTA 4: Ver Saldo (O Extrato Financeiro)
-// =============================================================
-app.get('/providers/:providerId/balance', async (request, reply) => {
-  // 1. Pegamos o ID que veio na URL (ex: /providers/123/balance)
-  const { providerId } = request.params as { providerId: string };
-
-  // 2. Calculamos o SALDO DISPONÍVEL (Soma das transações PAID)
-  // O Prisma tem uma função mágica chamada "aggregate" para somar coisas
-  const available = await prisma.transaction.aggregate({
-    _sum: {
-      providerAmount: true // Quero somar a coluna providerAmount
-    },
-    where: {
-      providerId: providerId,
-      status: 'PAID'
-    }
-  });
-
-  // 3. Calculamos o SALDO A RECEBER (Soma das transações PENDING)
-  const pending = await prisma.transaction.aggregate({
-    _sum: {
-      providerAmount: true
-    },
-    where: {
-      providerId: providerId,
+      amount,
+      providerId,
+      externalId: invoice.id,
+      platformAmount: finalPlatformAmount, // Agora a variável existe!
+      providerAmount: finalProviderAmount,
       status: 'PENDING'
     }
   });
 
-  // 4. Devolvemos os números bonitinhos (tratando nulos como zero)
-  return {
-    providerId,
-    available_balance: available._sum.providerAmount || 0, // Se for null, devolve 0
-    pending_balance: pending._sum.providerAmount || 0
-  };
+  return reply.status(201).send({
+    transactionId: transaction.id,
+    invoiceUrl: invoice.secure_url,
+    pixCode: invoice.pix.qrcode_text,
+    split: {
+      provider: finalProviderAmount,
+      platform: finalPlatformAmount
+    }
+  });
 });
 
-// =============================================================
-// Inicialização do Servidor
-// =============================================================
+// ROTA 3: Webhook
+app.post('/webhooks/iugu', async (request, reply) => {
+  const body = request.body as any;
+  if (body.event === 'invoice.status_changed' && body.data.status === 'paid') {
+     await prisma.transaction.updateMany({
+       where: { externalId: body.data.id },
+       data: { status: 'PAID' }
+     });
+  }
+  return reply.send();
+});
+
+// ROTA 4: Extrato
+app.get('/providers/:providerId/balance', async (request) => {
+    const { providerId } = request.params as { providerId: string };
+    
+    const available = await prisma.transaction.aggregate({
+        _sum: { providerAmount: true },
+        where: { providerId, status: 'PAID' }
+    });
+
+    const pending = await prisma.transaction.aggregate({
+        _sum: { providerAmount: true },
+        where: { providerId, status: 'PENDING' }
+    });
+
+    return {
+        available: available._sum.providerAmount || 0,
+        pending: pending._sum.providerAmount || 0
+    }
+});
+
 app.listen({ port: 3333 }).then(() => {
-  console.log('🚀 Servidor HTTP rodando em http://localhost:3333');
+  console.log('🔥 Server running on http://localhost:3333');
 });
