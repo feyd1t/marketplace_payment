@@ -6,11 +6,11 @@ POST http://localhost:3333/transactions
 Content-Type: application/json
 
 {
-  "providerId": "60defd69-6361-4d7c-aaa5-b21222b58e42",
-  "amount": 20000,
+  "amount": 5000,
+  "providerId": "60defd69-6361-4d7c-aaa5-b21222b58e42", 
+  "description": "Serviço de Teste",
   "category": "PINTURA",
-  "city": "SAO_PAULO",
-  "description": "Pintura da Sala - Serviço #99"
+  "state": "SP"
 }
 ### 3. SIMULAR IUGU (Webhook de Pagamento)
 POST http://localhost:3333/webhooks/iugu

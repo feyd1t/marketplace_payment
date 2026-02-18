@@ -1,5 +1,5 @@
 import fastify from 'fastify';
-import { z } from 'zod'; // <--- Agora importado corretamente!
+import { z } from 'zod'; 
 import { prisma } from './lib/prisma';
 import { CommissionService } from './services/ComissionService'; 
 import { IuguService } from './services/IuguService';
@@ -10,6 +10,28 @@ const app = fastify();
 app.get('/providers', async () => {
   const providers = await prisma.provider.findMany();
   return providers;
+});
+
+app.post('/providers', async (request, reply) => {
+  // Validação simples
+  const createProviderSchema = z.object({
+    name: z.string(),
+    email: z.string().email(),
+    password: z.string(),
+  });
+
+  const { name, email, password } = createProviderSchema.parse(request.body);
+
+  // Cria no banco
+  const provider = await prisma.provider.create({
+    data: {
+      name,
+      email,
+      password,
+    },
+  });
+
+  return reply.status(201).send(provider);
 });
 
 // ROTA 2: Criar Transação
@@ -28,25 +50,22 @@ app.post('/transactions', async (request, reply) => {
   const iuguService = new IuguService();
 
   // 1. Calcula o Split
-  // O código abaixo resolve o erro "Property does not exist"
   const split = commissionService.calculateSplit(amount, category, state);
   
-  // TRADUÇÃO: O serviço devolve com underline, mas o banco (Prisma) quer sem underline
-  // Se o seu serviço retornar 'platformAmount', ele usa. Se retornar 'marketplace_amount', ele usa também.
   const finalPlatformAmount = (split as any).platformAmount || (split as any).marketplace_amount;
   const finalProviderAmount = (split as any).providerAmount || (split as any).provider_amount;
 
   // 2. Integração Gateway
   const invoice = await iuguService.createCharge(amount, description);
 
-  // 3. Salva no Banco
+ // 3. Salva no Banco
   const transaction = await prisma.transaction.create({
     data: {
-      amount,
-      providerId,
-      externalId: invoice.id,
-      platformAmount: finalPlatformAmount, // Agora a variável existe!
-      providerAmount: finalProviderAmount,
+      amount: Number(amount),
+      providerId: providerId,
+      externalId: String(invoice.id),
+      providerAmount: Number(finalProviderAmount),
+      marketplaceFee: Number(finalPlatformAmount), 
       status: 'PENDING'
     }
   });
